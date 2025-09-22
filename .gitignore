@@ -1,0 +1,27 @@
+# создаём/редактируем .gitignore
+cat > .gitignore <<'EOF'
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+*.log
+
+# venv
+.venv/
+env/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env (секреты)
+.env
+EOF
