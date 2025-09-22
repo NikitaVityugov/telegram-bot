@@ -1,125 +1,181 @@
 import os
-import logging
+import json
+import telebot
+from dotenv import load_dotenv
+from flask import Flask, request
+import requests
 from datetime import datetime
 
-from dotenv import load_dotenv
-import telebot
-from flask import Flask, request
-
-# =========================
-#   ЗАГРУЗКА КОНФИГА
-# =========================
+# Загружаем переменные окружения
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-FOLDER_ID = os.getenv("FOLDER_ID")          # если используешь YandexGPT
-API_KEY = os.getenv("API_KEY")              # если используешь YandexGPT
-ADMIN_IDS = os.getenv("ADMIN_IDS", "")
-ADMIN_IDS = [int(x) for x in ADMIN_IDS.split(",") if x.strip().isdigit()]
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
+ADMIN_IDS = os.getenv("ADMIN_IDS", "").split(",")
 
-# URL твоего сервиса на Render (External URL, из Dashboard → Settings → Environment)
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")    # пример: https://telegram-bot-xxxxx.onrender.com
-WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}" if WEBHOOK_HOST else None
-
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("❌ TELEGRAM_TOKEN не задан. Проверь переменные окружения.")
-
-# =========================
-#     ИНИЦИАЛИЗАЦИЯ
-# =========================
-bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-# Простая «статистика» в памяти процесса
-user_stats = {}
+STATS_FILE = "stats.json"
 
-# =========================
-#       ХЭНДЛЕРЫ
-# =========================
+# =======================
+# Работа со статистикой
+# =======================
+
+def load_stats():
+    if os.path.exists(STATS_FILE):
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"users": {}, "messages": 0}
+
+def save_stats(stats):
+    with open(STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
+stats = load_stats()
+
+def update_stats(user_id):
+    stats["messages"] += 1
+    stats["users"].setdefault(str(user_id), 0)
+    stats["users"][str(user_id)] += 1
+    save_stats(stats)
+
+# =======================
+# Вспомогательные функции
+# =======================
+
+def is_admin(user_id):
+    return str(user_id) in ADMIN_IDS
+
+def ask_yandex_gpt(prompt):
+    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+    headers = {
+        "Authorization": f"Api-Key {YANDEX_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt/latest",
+        "completionOptions": {
+            "stream": False,
+            "temperature": 0.6,
+            "maxTokens": 200
+        },
+        "messages": [
+            {"role": "user", "text": prompt}
+        ]
+    }
+    resp = requests.post(url, headers=headers, json=data)
+    if resp.status_code == 200:
+        result = resp.json()
+        try:
+            return result["result"]["alternatives"][0]["message"]["text"]
+        except (KeyError, IndexError):
+            return "⚠️ Ошибка разбора ответа YandexGPT"
+    else:
+        return f"⚠️ Ошибка API: {resp.status_code} - {resp.text}"
+
+# =======================
+# Команды
+# =======================
+
 @bot.message_handler(commands=["start"])
-def cmd_start(message):
-    uid = message.from_user.id
-    user_stats[uid] = user_stats.get(uid, 0) + 1
-    bot.reply_to(message, "👋 Привет! Я бот 🤖. Напиши что-нибудь, и я отвечу.")
+def start_message(message):
+    bot.reply_to(message, "👋 Привет! Я бот 🤖. Напиши что-нибудь, и я отвечу через YandexGPT.")
 
 @bot.message_handler(commands=["help"])
-def cmd_help(message):
-    bot.reply_to(
-        message,
-        "📌 Команды:\n"
-        "/start — начать\n"
+def help_message(message):
+    help_text = (
+        "📌 Доступные команды:\n"
+        "/start — запуск\n"
         "/help — помощь\n"
-        "/admin — панель администратора (если есть права)\n"
-        "/stats — статистика (для админов)"
+        "/ping — проверить доступность YandexGPT\n"
+        "/admin — панель администратора (только для админов)"
     )
+    bot.reply_to(message, help_text)
+
+@bot.message_handler(commands=["ping"])
+def ping_message(message):
+    test = ask_yandex_gpt("Скажи 'Привет' одним словом.")
+    bot.reply_to(message, f"✅ YandexGPT доступен: {test}")
 
 @bot.message_handler(commands=["admin"])
-def cmd_admin(message):
-    if message.from_user.id in ADMIN_IDS:
-        bot.reply_to(message, "✅ У вас есть права администратора!")
-    else:
-        bot.reply_to(message, "❌ У вас нет прав администратора.")
+def admin_panel(message):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "⛔ У тебя нет доступа к админ-панели.")
+        return
+    panel = (
+        "⚙️ Панель администратора:\n"
+        "/stats — статистика\n"
+        "/users — список пользователей\n"
+        "/broadcast — рассылка"
+    )
+    bot.reply_to(message, panel)
 
 @bot.message_handler(commands=["stats"])
-def cmd_stats(message):
-    if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "⛔ Доступ запрещён")
+def show_stats(message):
+    if not is_admin(message.from_user.id):
         return
-    total_users = len(user_stats)
-    total_messages = sum(user_stats.values())
-    bot.reply_to(
-        message,
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reply = (
         f"📊 Статистика:\n"
-        f"👥 Пользователей: {total_users}\n"
-        f"💬 Сообщений: {total_messages}\n"
-        f"🕒 Серверное время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"- Пользователей: {len(stats['users'])}\n"
+        f"- Сообщений: {stats['messages']}\n"
+        f"- Время сервера: {now}"
     )
+    bot.reply_to(message, reply)
+
+@bot.message_handler(commands=["users"])
+def list_users(message):
+    if not is_admin(message.from_user.id):
+        return
+    reply = "👥 Список пользователей:\n"
+    for uid, count in stats["users"].items():
+        reply += f"ID: {uid} — {count} сообщений\n"
+    bot.reply_to(message, reply)
+
+@bot.message_handler(commands=["broadcast"])
+def broadcast_message(message):
+    if not is_admin(message.from_user.id):
+        return
+    parts = message.text.split(" ", 1)
+    if len(parts) < 2:
+        bot.reply_to(message, "✍️ Использование: /broadcast текст рассылки")
+        return
+    text = parts[1]
+    for uid in stats["users"].keys():
+        try:
+            bot.send_message(uid, f"📢 Сообщение от админа:\n\n{text}")
+        except Exception:
+            pass
+    bot.reply_to(message, "✅ Рассылка завершена.")
+
+# =======================
+# Основная логика
+# =======================
 
 @bot.message_handler(func=lambda m: True)
-def echo(message):
-    uid = message.from_user.id
-    user_stats[uid] = user_stats.get(uid, 0) + 1
-    bot.reply_to(message, f"Ты написал: {message.text}")
+def handle_message(message):
+    update_stats(message.from_user.id)
+    reply = ask_yandex_gpt(message.text)
+    bot.reply_to(message, reply)
 
-# =========================
-#      FLASK РОУТЫ
-# =========================
-@app.get("/")
-def index():
-    return "OK", 200
+# =======================
+# Flask + Webhook
+# =======================
 
-@app.get("/healthz")
-def healthz():
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def webhook():
+    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
+    bot.process_new_updates([update])
     return "ok", 200
 
-@app.post(WEBHOOK_PATH)
-def webhook():
-    if request.headers.get("content-type") == "application/json":
-        json_str = request.get_data().decode("utf-8")
-        update = telebot.types.Update.de_json(json_str)
-        bot.process_new_updates([update])
-        return "OK", 200
-    return "Unsupported Media Type", 415
+@app.route("/", methods=["GET"])
+def index():
+    return "Бот работает!", 200
 
-# =========================
-#       ЗАПУСК APP
-# =========================
 if __name__ == "__main__":
-    if not WEBHOOK_URL:
-        raise RuntimeError(
-            "❌ WEBHOOK_HOST не задан. Добавь переменную окружения в Render → "
-            "Settings → Environment → WEBHOOK_HOST=https://<твой-сервис>.onrender.com"
-        )
-
-    logging.info("Удаляем старый webhook (на всякий случай)...")
-    bot.remove_webhook()
-
-    logging.info(f"Ставим новый webhook: {WEBHOOK_URL}")
-    ok = bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
-    logging.info(f"Webhook set: {ok}")
-
     port = int(os.environ.get("PORT", 5000))
-    logging.info(f"Запускаем Flask на 0.0.0.0:{port}")
+    bot.remove_webhook()
+    bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_URL')}/{TELEGRAM_TOKEN}")
     app.run(host="0.0.0.0", port=port)
