@@ -9,8 +9,8 @@ import telebot
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
-API_KEY = os.getenv("YANDEX_API_KEY")
+FOLDER_ID = os.getenv("FOLDER_ID")
+API_KEY = os.getenv("API_KEY")
 
 # Настройка логирования
 logging.basicConfig(
