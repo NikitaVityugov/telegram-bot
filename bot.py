@@ -8,6 +8,11 @@ import telebot
 # Загружаем переменные окружения из .env
 load_dotenv()
 
+# Получаем список админов
+ADMIN_IDS = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS = [int(x) for x in ADMIN_IDS.split(",") if x.strip().isdigit()]
+
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 FOLDER_ID = os.getenv("FOLDER_ID")
 API_KEY = os.getenv("API_KEY")
@@ -21,6 +26,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+# Декоратор для проверки прав администратора
+def admin_only(func):
+    def wrapper(message, *args, **kwargs):
+        if message.from_user.id not in ADMIN_IDS:
+            bot.reply_to(message, "⛔ У вас нет доступа к этой команде.")
+            return
+        return func(message, *args, **kwargs)
+    return wrapper
+
 
 # Хранилище контекста (последние 5 сообщений для каждого чата)
 chat_context = defaultdict(list)
@@ -117,6 +132,33 @@ def handle_message(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
         logger.error(f"Ошибка у {chat_id}: {str(e)}")
+
+
+from collections import defaultdict
+
+# Простая статистика сообщений
+user_messages = defaultdict(int)
+
+# Подсчет сообщений
+@bot.message_handler(func=lambda m: True, content_types=['text', 'voice'])
+def track_messages(message):
+    user_messages[message.from_user.id] += 1
+    # ❗ тут вместо bot.reply_to можно оставить твою текущую обработку сообщений
+    bot.reply_to(message, "✅ Сообщение принято!")
+
+# Команда только для админов: /stats
+@bot.message_handler(commands=['stats'])
+@admin_only
+def send_stats(message):
+    total_users = len(user_messages)
+    total_messages = sum(user_messages.values())
+    response = (
+        f"📊 Статистика бота:\n"
+        f"👥 Пользователей: {total_users}\n"
+        f"💬 Сообщений: {total_messages}\n"
+    )
+    bot.reply_to(message, response)
+
 
 if __name__ == "__main__":
     logger.info("Бот запускается...")
