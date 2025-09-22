@@ -1,4 +1,5 @@
 import os
+import requests
 import telebot
 from telebot import types
 from flask import Flask, request
@@ -23,11 +24,42 @@ user_stats = {}
 total_messages = 0
 
 # ==============================
+# Функция: запрос к YandexGPT
+# ==============================
+def ask_yandex_gpt(question: str) -> str:
+    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+
+    headers = {
+        "Authorization": f"Api-Key {YANDEX_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    body = {
+        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt/latest",
+        "completionOptions": {
+            "stream": False,
+            "temperature": 0.6,
+            "maxTokens": 200
+        },
+        "messages": [
+            {"role": "user", "text": question}
+        ]
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=body, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        return result["result"]["alternatives"][0]["message"]["text"]
+    except Exception as e:
+        return f"⚠️ Ошибка при обращении к YandexGPT: {e}"
+
+# ==============================
 # Команды
 # ==============================
 @bot.message_handler(commands=["start"])
 def start_cmd(message):
-    bot.reply_to(message, "👋 Привет! Я бот 🤖. Напиши что-нибудь, и я отвечу.")
+    bot.reply_to(message, "👋 Привет! Я бот 🤖. Задай мне вопрос, и я отвечу через YandexGPT!")
 
 @bot.message_handler(commands=["help"])
 def help_cmd(message):
@@ -39,7 +71,8 @@ def help_cmd(message):
 
 @bot.message_handler(commands=["ping"])
 def ping_cmd(message):
-    bot.reply_to(message, "✅ YandexGPT доступен (тестовый ответ).")
+    reply = ask_yandex_gpt("Скажи 'Яндекс доступен' одним предложением")
+    bot.reply_to(message, reply)
 
 @bot.message_handler(commands=["admin"])
 def admin_cmd(message):
@@ -91,12 +124,14 @@ def broadcast_cmd(message):
 # Ответы на обычные сообщения
 # ==============================
 @bot.message_handler(func=lambda message: True)
-def echo_message(message):
+def handle_message(message):
     global total_messages
     user_id = message.from_user.id
     user_stats[user_id] = user_stats.get(user_id, 0) + 1
     total_messages += 1
-    bot.reply_to(message, f"Ты написал: {message.text}")
+
+    reply = ask_yandex_gpt(message.text)
+    bot.reply_to(message, reply)
 
 # ==============================
 # Flask (для Render)
@@ -116,7 +151,6 @@ def index():
 # Запуск
 # ==============================
 if __name__ == "__main__":
-    # Устанавливаем webhook
     bot.remove_webhook()
     bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TELEGRAM_TOKEN}")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
